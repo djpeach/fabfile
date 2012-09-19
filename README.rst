@@ -64,7 +64,8 @@ Example usage
 Create ``fabfile.py`` in your project directory and add your own environment
 settings.
 
-.. code-block:: python
+.. code:: python
+
     from elvard.fabfile import *
 
     env.hosts = ['tomas-ehrlich_cz@tomas-ehrlich.cz:22122']
