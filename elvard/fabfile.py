@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
+import os.path
 from contextlib import contextmanager
-from fabric.api import task
-from fabric.operations import local, run, require
+from datetime import date
+from fabric.decorators import task, roles
+from fabric.operations import local, run, require, get
 from fabric.context_managers import cd, prefix
 from fabric.colors import green, yellow
 from fabric.state import env
@@ -23,6 +25,14 @@ def virtualenv(directory=None):
         with prefix(activate()):
             yield
 
+
+@contextmanager
+def manage():
+    with prefix('export DJANGO_SETTINGS_MODULE="{}.settings.{}"'.format(env.project, env.config['settings'])):
+        with virtualenv(), cd(env.project):
+            yield
+
+
 @task
 def staging():
     """Configure staging environment."""
@@ -38,6 +48,26 @@ def stable(tagname=None):
     env.tagname = tagname
 
 
+def _enable_disable_apache_site(enable=True):
+    if enable:
+        run('a2ensite {}'.format(env.config['apache_site']))
+    else:
+        run('a2dissite {}'.format(env.config['apache_site']))
+    run('service apache2 reload')
+
+
+@roles('root')
+@task
+def enable_apache():
+    _enable_disable_apache_site(True)
+
+
+@roles('root')
+@task
+def disable_apache():
+    _enable_disable_apache_site(False)
+
+
 @task
 def setup_staticfiles():
     """Create public directories for static and media files."""
@@ -50,9 +80,8 @@ def setup_staticfiles():
 def update_staticfiles():
     """Update static files via collectstatic command."""
     print yellow(stage_msg('Updating static files…'))
-    with prefix('export DJANGO_SETTINGS_MODULE="tomas_ehrlich.settings.{}"'.format(env.config['settings'])):
-        with virtualenv(), cd('src'):
-            run('python manage.py collectstatic --noinput')
+    with manage():
+        run('python manage.py collectstatic --noinput')
 
 
 @task
@@ -72,11 +101,23 @@ def update_virtualenv():
 @task
 def update_database():
     """Update static database using South."""
-    with prefix('export DJANGO_SETTINGS_MODULE="tomas_ehrlich.settings.{}"'.format(env.config['settings'])):
-        with virtualenv(), cd('src'):
-            run('python manage.py syncdb --all --noinput')
-            run('python manage.py migrate --fake --noinput')
+    with manage():
+        run('python manage.py syncdb --all --noinput')
+        run('python manage.py migrate --fake --noinput')
 
+
+@task
+def pull_database():
+    datafile = '{}.json'.format(date.today())
+    remote_path = os.path.join(env.config['directory'], 'backup')
+    remote_file = os.path.join(remote_path, datafile)
+    local_file = datafile
+    with manage():
+        run('mkdir {}'.format(remote_path))
+        run('python manage.py dumpdata > {}'.format(remote_file))
+        get(remote_file, local_file)
+        run('rm {}'.format(remote_file))
+    
 
 @task
 def setup_repository():
@@ -101,9 +142,9 @@ def deploy():
     local('git merge {}'.format(env.config['slave']))
     if env.stage == 'stable' and env.tagname:
         local('git tag -s {}'.format(env.tagname))
-    local('git push origin {} --tags'.format(env.config['master']))
 
     print yellow(stage_msg('Pushing to upstream…'))
+    local('git push origin {} --tags'.format(env.config['master']))
     with cd(env.config['directory']):
         run('git fetch')
         run('git fetch --tags')
